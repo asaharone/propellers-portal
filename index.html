@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
 <title>Пропеллеры · Foundation Portal</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -573,6 +574,7 @@ var ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI
 var LS_TOKEN = "propellers_token_v2";
 var LS_PREFS = "propellers_prefs_v2";
 var LS_CACHE = "propellers_cache_v2";
+var LS_UNSAVED = "propellers_unsaved_v2";
 var POLL_MS  = 25000;
 
 var CATS = {
@@ -596,7 +598,12 @@ var token = null;
 var prefs = {theme:'light', read:1, author:''};
 var current = {type:'dash', id:null};
 var toastTimer=null, pollTimer=null, answerTimers={};
-var pendingAnswers={}, pendingTasks={};   // keys with a save in flight — protected from poll overwrite
+// Durable "not yet confirmed saved" buffer (also persisted to localStorage). Any value
+// here is preserved across server refreshes and retried until the server accepts it —
+// so a flaky connection can never silently drop a typed answer or a task status.
+var unsaved={answers:{}, tasks:{}};
+var bootCache=null;   // snapshot of the device cache, taken before any ingest overwrites it
+var recovered=false;
 var hasData=false;
 
 /* ============================ STORAGE (prefs/token only) ============================ */
@@ -616,6 +623,10 @@ function loadCache(){
     return DOCS.length>0;
   }catch(e){ return false; }
 }
+function readCacheObj(){ try{ return JSON.parse(localStorage.getItem(LS_CACHE)||'null'); }catch(e){ return null; } }
+function loadUnsaved(){ try{ var u=localStorage.getItem(LS_UNSAVED); if(u){ var o=JSON.parse(u)||{}; unsaved={answers:o.answers||{}, tasks:o.tasks||{}}; } }catch(e){} }
+function saveUnsaved(){ try{ localStorage.setItem(LS_UNSAVED, JSON.stringify(unsaved)); }catch(e){} }
+function unsavedCount(){ return Object.keys(unsaved.answers).length + Object.keys(unsaved.tasks).length; }
 
 /* ============================ API ============================ */
 function api(payload){
@@ -631,15 +642,14 @@ function api(payload){
 }
 function ingest(content, data){
   if(content){ DOCS=content.docs||[]; TASKS=content.tasks||[]; QUESTIONS=content.questions||[]; }
-  var prevA=answers, prevT=taskMap;
   answers={}; taskMap={}; comments={};
   data = data || {};
   (data.answers||[]).forEach(function(a){ answers[a.question_id]={value:a.value, by:a.updated_by, at:a.updated_at}; });
   (data.taskStatus||[]).forEach(function(t){ taskMap[t.task_id]={status:t.status, by:t.updated_by, at:t.updated_at}; });
   (data.comments||[]).forEach(function(c){ (comments[c.doc_num]=comments[c.doc_num]||[]).push(c); });
-  // keep optimistic local edits that are still saving, so a poll mid-save doesn't flicker them back
-  Object.keys(pendingAnswers).forEach(function(qid){ if(prevA[qid]!==undefined) answers[qid]=prevA[qid]; });
-  Object.keys(pendingTasks).forEach(function(tid){ if(prevT[tid]!==undefined) taskMap[tid]=prevT[tid]; });
+  // Never let a server refresh overwrite a local edit that isn't confirmed saved yet.
+  Object.keys(unsaved.answers).forEach(function(qid){ answers[qid]={value:unsaved.answers[qid], by:authorName(), at:(new Date()).toISOString()}; });
+  Object.keys(unsaved.tasks).forEach(function(tid){ taskMap[tid]={status:unsaved.tasks[tid], by:authorName(), at:(new Date()).toISOString()}; });
   hasData=true;
   cacheState();
 }
@@ -671,8 +681,10 @@ function nowHM(){ var d=new Date(); return ('0'+d.getHours()).slice(-2)+':'+('0'
 function setSaved(kind){
   var dot=document.getElementById('saveDot'), txt=document.getElementById('saveTxt');
   if(!dot) return;
+  var n=unsavedCount();
+  if(n>0 && kind!=='busy'){ dot.className='dot fail'; txt.textContent='не сохранено: '+n+' — повторяю…'; return; }
   dot.className='dot'+(kind==='busy'?' busy':kind==='fail'?' fail':'');
-  txt.textContent = kind==='busy' ? 'сохранение…' : kind==='fail' ? 'нет связи — не сохранено' : ('сохранено · '+nowHM());
+  txt.textContent = kind==='busy' ? 'сохранение…' : kind==='fail' ? 'нет связи — повторяю…' : ('сохранено · '+nowHM());
 }
 function showOffline(on){ var b=document.getElementById('offlineBanner'); if(b) b.classList.toggle('show', !!on); }
 
@@ -877,10 +889,9 @@ function cycleTask(it, row, btn, gh, grp){
   var done=0; grp.items.forEach(function(x){ if(taskStatus(x)==='done')done++; });
   gh.querySelector('.frac').textContent=done+'/'+grp.items.length;
   refreshNavCounts(); updateRing(); cacheState();
-  setSaved('busy'); pendingTasks[it.id]=true;
-  api({action:'save_task', task_id:it.id, status:ns, author:authorName()}).then(function(r){
-    setSaved(r.status===200?'saved':'fail'); delete pendingTasks[it.id];
-  }).catch(function(){ setSaved('fail'); delete pendingTasks[it.id]; });
+  unsaved.tasks[it.id]=ns; saveUnsaved();
+  setSaved('busy');
+  saveTask(it.id);
 }
 
 /* ============================ answers ============================ */
@@ -919,17 +930,52 @@ function renderAnswers(v){
 }
 function onAnswer(qid, val, card){
   answers[qid]=Object.assign(answers[qid]||{}, {value:val, by:authorName(), at:new Date().toISOString()});
+  unsaved.answers[qid]=val; saveUnsaved();   // buffered immediately — survives reload/connection loss
   var on=val.trim().length>0;
   var st=card.querySelector('.qstate');
   st.className='qstate'+(on?' on':''); st.textContent=on?'✓ есть ответ':'нет ответа';
   refreshNavCounts(); cacheState();
-  setSaved('busy'); pendingAnswers[qid]=true;
+  setSaved('busy');
   if(answerTimers[qid]) clearTimeout(answerTimers[qid]);
-  answerTimers[qid]=setTimeout(function(){
-    api({action:'save_answer', question_id:qid, value:val, author:authorName()}).then(function(r){
-      setSaved(r.status===200?'saved':'fail'); delete pendingAnswers[qid];
-    }).catch(function(){ setSaved('fail'); delete pendingAnswers[qid]; });
-  }, 600);
+  answerTimers[qid]=setTimeout(function(){ saveAnswer(qid); }, 600);
+}
+// Push a buffered answer to the server; keep it buffered (and retry later) until accepted.
+function saveAnswer(qid){
+  if(!(qid in unsaved.answers)) return;
+  var val=unsaved.answers[qid];
+  api({action:'save_answer', question_id:qid, value:val, author:authorName()}).then(function(r){
+    if(r.status===200 && unsaved.answers[qid]===val){ delete unsaved.answers[qid]; saveUnsaved(); }
+    setSaved(r.status===200?'saved':'fail');
+  }).catch(function(){ setSaved('fail'); });
+}
+function saveTask(tid){
+  if(!(tid in unsaved.tasks)) return;
+  var stt=unsaved.tasks[tid];
+  api({action:'save_task', task_id:tid, status:stt, author:authorName()}).then(function(r){
+    if(r.status===200 && unsaved.tasks[tid]===stt){ delete unsaved.tasks[tid]; saveUnsaved(); }
+    setSaved(r.status===200?'saved':'fail');
+  }).catch(function(){ setSaved('fail'); });
+}
+function flushUnsaved(){
+  Object.keys(unsaved.answers).forEach(function(qid){ saveAnswer(qid); });
+  Object.keys(unsaved.tasks).forEach(function(tid){ saveTask(tid); });
+}
+// One-time recovery: restore answers that this device remembers (cache) but the
+// server is missing — e.g. lost to a failed save in an earlier session — then re-save them.
+function recoverFromCache(){
+  if(recovered) return; recovered=true;
+  if(!bootCache || !bootCache.answers) return;
+  var n=0;
+  Object.keys(bootCache.answers).forEach(function(qid){
+    var cv=((bootCache.answers[qid]||{}).value||'').trim();
+    var sv=((answers[qid]||{}).value||'').trim();
+    if(cv && !sv){
+      unsaved.answers[qid]=bootCache.answers[qid].value;
+      answers[qid]={value:bootCache.answers[qid].value, by:authorName(), at:(new Date()).toISOString()};
+      n++;
+    }
+  });
+  if(n){ saveUnsaved(); flushUnsaved(); refreshNavCounts(); toast('Восстановлено из памяти устройства: '+n+' ответ(ов)'); }
 }
 function focusQuestion(qid){
   var card=document.querySelector('.qcard[data-qid="'+qid+'"]');
@@ -1391,6 +1437,7 @@ function doUnlock(pw){
     if(r.status===200 && r.body && r.body.ok){
       token=r.body.token; saveToken();
       ingest(r.body.content, r.body.data);
+      recoverFromCache();
       enterApp();
     } else if(r.status===401){
       err.textContent='Неверный пароль. Попробуйте ещё раз.';
@@ -1425,6 +1472,8 @@ function wireChrome(){
 }
 function init(){
   loadLocal();
+  loadUnsaved();
+  bootCache=readCacheObj();   // snapshot device cache BEFORE any ingest overwrites it
   applyTheme(prefs.theme);
   applyFont();
   wireChrome();
@@ -1433,11 +1482,15 @@ function init(){
     var pw=document.getElementById('pw').value;
     if(pw) doUnlock(pw);
   });
+  // keep retrying anything not yet confirmed saved (covers flaky connection)
+  setInterval(function(){ if(!document.hidden && unsavedCount()) flushUnsaved(); }, 12000);
+  window.addEventListener('online', flushUnsaved);
   if(token){
     // try the saved session
     api({action:'state'}).then(function(r){
       if(r.status===200 && r.body && r.body.ok){
         ingest(r.body.content, r.body.data);
+        recoverFromCache();
         enterApp();
       } else { lock(); }
     }).catch(function(){
