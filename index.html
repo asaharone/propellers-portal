@@ -596,6 +596,7 @@ var token = null;
 var prefs = {theme:'light', read:1, author:''};
 var current = {type:'dash', id:null};
 var toastTimer=null, pollTimer=null, answerTimers={};
+var pendingAnswers={}, pendingTasks={};   // keys with a save in flight — protected from poll overwrite
 var hasData=false;
 
 /* ============================ STORAGE (prefs/token only) ============================ */
@@ -630,11 +631,15 @@ function api(payload){
 }
 function ingest(content, data){
   if(content){ DOCS=content.docs||[]; TASKS=content.tasks||[]; QUESTIONS=content.questions||[]; }
+  var prevA=answers, prevT=taskMap;
   answers={}; taskMap={}; comments={};
   data = data || {};
   (data.answers||[]).forEach(function(a){ answers[a.question_id]={value:a.value, by:a.updated_by, at:a.updated_at}; });
   (data.taskStatus||[]).forEach(function(t){ taskMap[t.task_id]={status:t.status, by:t.updated_by, at:t.updated_at}; });
   (data.comments||[]).forEach(function(c){ (comments[c.doc_num]=comments[c.doc_num]||[]).push(c); });
+  // keep optimistic local edits that are still saving, so a poll mid-save doesn't flicker them back
+  Object.keys(pendingAnswers).forEach(function(qid){ if(prevA[qid]!==undefined) answers[qid]=prevA[qid]; });
+  Object.keys(pendingTasks).forEach(function(tid){ if(prevT[tid]!==undefined) taskMap[tid]=prevT[tid]; });
   hasData=true;
   cacheState();
 }
@@ -871,10 +876,10 @@ function cycleTask(it, row, btn, gh, grp){
   var done=0; grp.items.forEach(function(x){ if(taskStatus(x)==='done')done++; });
   gh.querySelector('.frac').textContent=done+'/'+grp.items.length;
   refreshNavCounts(); updateRing(); cacheState();
-  setSaved('busy');
+  setSaved('busy'); pendingTasks[it.id]=true;
   api({action:'save_task', task_id:it.id, status:ns, author:authorName()}).then(function(r){
-    setSaved(r.status===200?'saved':'fail');
-  }).catch(function(){ setSaved('fail'); });
+    setSaved(r.status===200?'saved':'fail'); delete pendingTasks[it.id];
+  }).catch(function(){ setSaved('fail'); delete pendingTasks[it.id]; });
 }
 
 /* ============================ answers ============================ */
@@ -917,12 +922,12 @@ function onAnswer(qid, val, card){
   var st=card.querySelector('.qstate');
   st.className='qstate'+(on?' on':''); st.textContent=on?'✓ есть ответ':'нет ответа';
   refreshNavCounts(); cacheState();
-  setSaved('busy');
+  setSaved('busy'); pendingAnswers[qid]=true;
   if(answerTimers[qid]) clearTimeout(answerTimers[qid]);
   answerTimers[qid]=setTimeout(function(){
     api({action:'save_answer', question_id:qid, value:val, author:authorName()}).then(function(r){
-      setSaved(r.status===200?'saved':'fail');
-    }).catch(function(){ setSaved('fail'); });
+      setSaved(r.status===200?'saved':'fail'); delete pendingAnswers[qid];
+    }).catch(function(){ setSaved('fail'); delete pendingAnswers[qid]; });
   }, 600);
 }
 function focusQuestion(qid){
@@ -1043,7 +1048,7 @@ function buildComments(num){
         var live=commentsFor(num);
         if(!live.some(function(x){return x.id===r.body.comment.id;})) live.push(r.body.comment);
         ta.value='';
-        renderCommentList(cl, num);
+        var clNow=document.getElementById('cmtList'); if(clNow) renderCommentList(clNow, num);
         var b=document.getElementById('cmtBadge'); if(b)b.textContent=live.length;
         refreshNavCounts(); cacheState(); setSaved('saved'); toast('Заметка сохранена');
       } else { setSaved('fail'); toast('Не удалось сохранить — проверьте связь', true); }
@@ -1071,7 +1076,8 @@ function renderCommentList(cl, num){
           var live=commentsFor(num);
           var idx=live.findIndex(function(x){return x.id===c.id;});
           if(idx>-1){ live.splice(idx,1); }
-          renderCommentList(cl,num); var b=document.getElementById('cmtBadge'); if(b)b.textContent=live.length; refreshNavCounts(); cacheState();
+          var clNow=document.getElementById('cmtList'); if(clNow) renderCommentList(clNow,num);
+          var b=document.getElementById('cmtBadge'); if(b)b.textContent=live.length; refreshNavCounts(); cacheState();
           setSaved('saved');
         } else { setSaved('fail'); toast('Не удалось удалить', true); }
       }).catch(function(){ setSaved('fail'); toast('Нет связи', true); });
@@ -1277,11 +1283,16 @@ function activeEditing(){
   var a=document.activeElement;
   return a && (a.tagName==='TEXTAREA' || (a.tagName==='INPUT' && a.type!=='search'));
 }
+// A non-empty comment draft (even if not focused) must survive a background refresh.
+function hasUnsavedDraft(){
+  var ta=document.querySelector('#view .comment-add textarea');
+  return !!(ta && ta.value.trim());
+}
 function refreshData(manual){
   return api({action:'state'}).then(function(r){
     if(r.status===200 && r.body && r.body.ok){
       window.__offline=false; showOffline(false);
-      if(!activeEditing()){
+      if(!activeEditing() && !hasUnsavedDraft()){
         ingest(r.body.content, r.body.data);
         buildNav(); setActiveNav(); render();
       } else { ingest(r.body.content, r.body.data); refreshNavCounts(); updateRing(); }
