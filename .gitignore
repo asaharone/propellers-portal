@@ -1,0 +1,12 @@
+# ── Never publish (sensitive or local-only) ──────────────────────────
+# The document content bundle and the whole Supabase function source stay local.
+supabase/
+
+# Local dev server config + secrets + design notes
+.claude/
+SECRETS.local.md
+docs/
+
+# OS / misc
+.DS_Store
+*.local
