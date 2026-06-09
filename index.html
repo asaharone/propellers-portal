@@ -505,7 +505,7 @@ html[data-theme="dark"] .task:hover{background:color-mix(in srgb,var(--accent) 6
     <div class="sb-foot">
       <div class="who">
         <label for="authorName">Ваш профиль (подпись к заметкам)</label>
-        <input id="authorName" type="text" maxlength="60" placeholder="Отец" autocomplete="off">
+        <input id="authorName" type="text" maxlength="60" placeholder="Владислав" autocomplete="off">
         <button class="prof-switch" id="profSwitch" type="button">сменить профиль</button>
       </div>
       <div class="saved"><span class="dot" id="saveDot"></span><span id="saveTxt">подключение…</span></div>
@@ -651,13 +651,14 @@ function docByNum(n){ for(var i=0;i<DOCS.length;i++){ if(DOCS[i].num===n) return
 function allTaskItems(){ var a=[]; TASKS.forEach(function(g){ g.items.forEach(function(it){ a.push(it); }); }); return a; }
 function taskStatus(it){ return (taskMap[it.id]&&taskMap[it.id].status) || it.status; }
 function answerVal(qid){ return (answers[qid]&&answers[qid].value) || ''; }
-function authorName(){ return (prefs.author&&prefs.author.trim()) || 'Отец'; }
+function authorName(){ return (prefs.author&&prefs.author.trim()) || 'Владислав'; }
 function hashCode(s){ var h=0; s=String(s||''); for(var i=0;i<s.length;i++){ h=(h*31 + s.charCodeAt(i))|0; } return Math.abs(h); }
-// Pin the main profiles to distinct, fixed colours; hash everyone else.
-var AUTHOR_FIXED={'Отец':25, 'Папа':25, 'Денис':210, 'Сын':210};
+// The two main profiles: Владислав (отец) and Денис (сын). Pinned to distinct,
+// fixed colours; everyone else gets a hashed hue. Aliases kept for safety.
+var AUTHOR_FIXED={'Владислав':25, 'Денис':210, 'Отец':25, 'Папа':25, 'Сын':210};
 var AUTHOR_HUES=[150,300,330,95,255,40,180,225];
 function authorColor(name){
-  name=(name&&String(name).trim())||'Отец';
+  name=(name&&String(name).trim())||'Владислав';
   var h=(AUTHOR_FIXED[name]!=null) ? AUTHOR_FIXED[name] : AUTHOR_HUES[hashCode(name) % AUTHOR_HUES.length];
   return 'hsl('+h+',68%,45%)';
 }
@@ -782,7 +783,7 @@ function renderDash(v){
   v.appendChild(hero);
 
   var co=el('div','callout');
-  co.innerHTML='<div class="ce">💬</div><div class="ct"><b>Как оставить комментарий:</b> откройте любой документ слева и внизу страницы напишите заметку в поле «Добавить заметку». Можно также отвечать на вопросы в разделе «Ответы на вопросы». Всё сохраняется автоматически — сын это увидит.</div>';
+  co.innerHTML='<div class="ce">💬</div><div class="ct"><b>Как оставить комментарий:</b> откройте любой документ слева и внизу страницы напишите заметку в поле «Добавить заметку». Можно также отвечать на вопросы в разделе «Ответы на вопросы». Всё сохраняется автоматически и видно обоим (Денису и Владиславу).</div>';
   v.appendChild(co);
 
   if(!libsOK){ var w=el('div','libwarn','⚠️ Не удалось загрузить библиотеки отображения (нет интернета?). Текст доступен, но разметка и диаграммы могут не отображаться.'); w.style.display='block'; v.appendChild(w); }
@@ -887,7 +888,7 @@ function renderAnswers(v){
   setTopbar('Ответы на вопросы', 'Что нужно уточнить');
   var head=el('div','hero');
   head.innerHTML='<div class="kick">'+answeredCount()+'/'+QUESTIONS.length+' закрыто</div><h1>Ответы на вопросы</h1>'+
-    '<p>Отвечайте прямо здесь — ответы сохраняются автоматически и видны сыну. Начните с 🔴 критичных: они разблокируют расчёты и решения.</p>';
+    '<p>Отвечайте прямо здесь — ответы сохраняются автоматически и видны обоим. Начните с 🔴 критичных: они разблокируют расчёты и решения.</p>';
   v.appendChild(head);
   var order=['crit','imp','ops','rel','fin'];
   order.forEach(function(cat){
@@ -1031,7 +1032,7 @@ function buildComments(num){
   var list=commentsFor(num);
   var h=el('h3'); h.innerHTML='💬 Комментарии и заметки <span class="badge" id="cmtBadge">'+list.length+'</span>';
   sec.appendChild(h);
-  sec.appendChild(el('p','lead','Напишите здесь свои мысли, вопросы или уточнения по этому документу. Сохраняется автоматически — сын увидит.'));
+  sec.appendChild(el('p','lead','Напишите здесь свои мысли, вопросы или уточнения по этому документу. Сохраняется автоматически и видно обоим.'));
   var cl=el('div','comment-list'); cl.id='cmtList';
   renderCommentList(cl, num);
   sec.appendChild(cl);
@@ -1060,13 +1061,13 @@ function buildComments(num){
 }
 function renderCommentList(cl, num){
   var list=commentsFor(num); cl.innerHTML='';
-  if(!list.length){ cl.appendChild(el('div','empty','Заметок пока нет. Добавьте первую — она сохранится и будет видна сыну.')); return; }
+  if(!list.length){ cl.appendChild(el('div','empty','Заметок пока нет. Добавьте первую — она сохранится и будет видна обоим.')); return; }
   list.slice().reverse().forEach(function(c){
     var node=el('div','comment');
-    var col=authorColor(c.author||'Отец');
+    var col=authorColor(c.author||'Владислав');
     node.style.borderLeftColor=col;
     var meta=el('div','meta');
-    meta.innerHTML='<div class="who-ts"><span class="pdot" style="background:'+col+'"></span><span class="who-n" style="color:'+col+'">'+esc(c.author||'Отец')+'</span><span class="ts">'+esc(fmtTs(c.created_at))+'</span></div>';
+    meta.innerHTML='<div class="who-ts"><span class="pdot" style="background:'+col+'"></span><span class="who-n" style="color:'+col+'">'+esc(c.author||'Владислав')+'</span><span class="ts">'+esc(fmtTs(c.created_at))+'</span></div>';
     var del=el('button','del','удалить'); del.title='Удалить заметку';
     del.addEventListener('click', function(){
       if(!confirm('Удалить эту заметку?')) return;
@@ -1157,7 +1158,7 @@ function buildExport(){
     var list=comments[d.num]||[];
     if(!list.length) return; any=true;
     L.push(''); L.push('### '+d.num+' · '+d.label);
-    list.forEach(function(c){ L.push('- ('+fmtTs(c.created_at)+', '+(c.author||'Отец')+') '+c.body); });
+    list.forEach(function(c){ L.push('- ('+fmtTs(c.created_at)+', '+(c.author||'Владислав')+') '+c.body); });
   });
   if(!any){ L.push(''); L.push('_(заметок нет)_'); }
   L.push('');
@@ -1341,7 +1342,7 @@ function showProfile(){
   var lk=document.getElementById('lock'); lk.classList.remove('show'); lk.setAttribute('aria-hidden','true');
   var p=document.getElementById('profile'); p.classList.add('show'); p.setAttribute('aria-hidden','false');
   var box=document.getElementById('profChoices'); box.innerHTML='';
-  ['Отец','Денис'].forEach(function(name){
+  ['Владислав','Денис'].forEach(function(name){
     var b=el('button','prof-choice'); b.type='button';
     b.innerHTML='<span class="pdot" style="background:'+authorColor(name)+'"></span>'+esc(name);
     b.addEventListener('click', function(){ pickProfile(name); });
