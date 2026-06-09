@@ -1117,7 +1117,7 @@ function applyTheme(t){
 function toggleTheme(){
   prefs.theme = (document.documentElement.getAttribute('data-theme')==='dark')?'light':'dark';
   applyTheme(prefs.theme); savePrefs();
-  if(current.type==='doc') render();
+  if(current.type==='doc'){ var sy=getScrollY(); render(); restoreScroll(sy); }
 }
 function applyFont(){ document.documentElement.style.setProperty('--read', String(prefs.read)); }
 function bumpFont(dir){
@@ -1289,15 +1289,40 @@ function hasUnsavedDraft(){
   var ta=document.querySelector('#view .comment-add textarea');
   return !!(ta && ta.value.trim());
 }
+// Signature of the *visible* shared state — lets us skip a re-render (and the
+// scroll jump it causes) when a background refresh brought nothing new.
+function dataSignature(){
+  var p=[];
+  Object.keys(comments).sort().forEach(function(k){ var a=comments[k]||[]; p.push('c'+k+'#'+a.length+':'+a.map(function(c){return c.id;}).join(',')); });
+  Object.keys(answers).sort().forEach(function(q){ p.push('a'+q+'='+((answers[q]||{}).value||'')); });
+  Object.keys(taskMap).sort().forEach(function(t){ p.push('t'+t+'='+((taskMap[t]||{}).status||'')); });
+  return p.join('|');
+}
+function getScrollY(){ return window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0; }
+function restoreScroll(y){
+  if(!y) return;
+  window.scrollTo(0,y);
+  requestAnimationFrame(function(){ window.scrollTo(0,y); });
+  setTimeout(function(){ window.scrollTo(0,y); }, 90);
+  setTimeout(function(){ window.scrollTo(0,y); }, 360);
+}
 function refreshData(manual){
   return api({action:'state'}).then(function(r){
     if(r.status===200 && r.body && r.body.ok){
       window.__offline=false; showOffline(false);
-      if(!activeEditing() && !hasUnsavedDraft()){
-        ingest(r.body.content, r.body.data);
+      var before=dataSignature();
+      ingest(r.body.content, r.body.data);
+      var changed=(dataSignature()!==before);
+      // Only rebuild the view when something actually changed AND the user isn't
+      // mid-edit — and keep their scroll position so the page never jumps.
+      if(changed && !activeEditing() && !hasUnsavedDraft()){
+        var sy=getScrollY();
         buildNav(); setActiveNav(); render();
-      } else { ingest(r.body.content, r.body.data); refreshNavCounts(); updateRing(); }
-      if(manual){ setSaved('saved'); toast('Данные обновлены'); }
+        restoreScroll(sy);
+      } else {
+        refreshNavCounts(); updateRing();
+      }
+      if(manual){ setSaved('saved'); toast(changed?'Данные обновлены':'Уже актуально'); }
       return true;
     } else if(r.status===401){
       lock(); return false;
@@ -1356,7 +1381,7 @@ function pickProfile(name){
   var an=document.getElementById('authorName'); if(an) an.value=name;
   var p=document.getElementById('profile'); p.classList.remove('show'); p.setAttribute('aria-hidden','true');
   if(document.getElementById('app').style.display==='none'){ showApp(); }
-  else { render(); toast('Профиль: '+name); }
+  else { var sy=getScrollY(); render(); restoreScroll(sy); toast('Профиль: '+name); }
 }
 function doUnlock(pw){
   var btn=document.getElementById('pwBtn'), txt=document.getElementById('pwBtnTxt'), err=document.getElementById('pwErr');
